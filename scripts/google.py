@@ -6,9 +6,15 @@ import time
 
 from bs4 import BeautifulSoup
 
+PROXY_IP = "localhost"
+PROXY_PORT = "8118"
+
 def get_query(query_text):
     BASE_URL = "http://www.google.com/search"
     USER_AGENT = {'User-agent': 'Mozilla/5.0'}
+    PROXIES = {
+        "http": "http://{}:{}".format(PROXY_IP, PROXY_PORT)
+    }
 
     return requests.get(BASE_URL,
                         params={"q":query_text,
@@ -16,9 +22,10 @@ def get_query(query_text):
                                 "channel":"fs",
                                 "ie":"utf-8",
                                 "oe":"utf-8"},
-                        headers=USER_AGENT)
+                        headers=USER_AGENT,
+                        proxies=PROXIES)
 
-def get_result(search_term, wait=1):
+def get_result(search_term, wait=5):
     RESULT_ID = "resultStats"
     NUMERIC_REGEX = "[0-9,]+"
 
@@ -28,15 +35,15 @@ def get_result(search_term, wait=1):
 
     soup = BeautifulSoup(query.text)
 
-    print("Got soup: {}".format(soup))
+    # print("Got soup: {}".format(soup))
 
     result_div = soup.find(id=RESULT_ID)
 
-    print("Got tag: {}".format(result_div))
+    # print("Got tag: {}".format(result_div))
 
     result_str = result_div.text
 
-    print("Got result string: {}".format(result_str))
+    # print("Got result string: {}".format(result_str))
 
     return int(re.search(
         NUMERIC_REGEX, result_str).group(0).replace(",", ""))
