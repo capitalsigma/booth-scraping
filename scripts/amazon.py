@@ -20,7 +20,8 @@ BookData = collections.namedtuple("BookData",
                                   ["overall_rank",
                                    "individual_rank",
                                    "info",
-                                   "rating"])
+                                   "rating",
+                                   "review_count"])
 QuoteData = collections.namedtuple("QuoteData",
                                    ["number",
                                     "text",
@@ -36,7 +37,7 @@ class NullEntry:
         return False
 
     def __getattr__(self, attr):
-        return "ERROR"
+        return ""
 
 class Scraper:
     BASE_URL_FMT = "https://kindle.amazon.com/most_popular/highlights_all_time/{}"
@@ -45,6 +46,7 @@ class Scraper:
     OVERALL_REGEX = r"#(\d+) (Paid)|(Free) in Kindle Store"
     LINE_REGEX = r"\s* #(\d+) \n .*?>(.*)"
     WS_REGEX = r"\s+"
+    NOT_DIGITS_REGEX = "[^0-9]"
 
     def __init__(self):
         self._cached_book_urls = {}
@@ -53,6 +55,7 @@ class Scraper:
         self._overall_re = re.compile(self.OVERALL_REGEX)
         self._line_re = re.compile(self.LINE_REGEX)
         self._ws_re = re.compile(self.WS_REGEX)
+        self._not_digits_re = re.compile(self.NOT_DIGITS_REGEX)
 
 
     def _make_request(self, url):
@@ -121,7 +124,13 @@ class Scraper:
         if rating_tag:
             return rating_tag.text.split("out", 1)[0].strip()
         else:
-            return "ERROR"
+            return ""
+
+    def _get_review_count(self, count_tag):
+        if count_tag:
+            return int(self._not_digits_re.sub("", tag.text))
+        else:
+            return ""
 
     def _process_book_page(self, page_soup):
         # #print("processing page: {}".format(page_soup))
@@ -151,10 +160,14 @@ class Scraper:
 
         #print("got rating: {}".format(rating))
 
+        review_count = self._get_review_count(
+            page_soup.find(id="revSAR"))
+
         return BookData(overall_rank,
                         individual_ranks,
                         product_info,
-                        rating)
+                        rating,
+                        review_count)
 
     def _get_num(self, number_tag):
         return int(number_tag.text.strip(" \n."))
@@ -269,7 +282,8 @@ def build_default_header_section(quote_data, book_data):
         quote_data.title,
         quote_data.author,
         book_data.rating,
-        book_data.overall_rank
+        book_data.overall_rank,
+        book_data.review_count
     ]
 
 def build_info_header_section(book_data, unique_infos):
