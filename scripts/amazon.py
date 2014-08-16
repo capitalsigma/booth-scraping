@@ -30,7 +30,7 @@ QuoteData = collections.namedtuple("QuoteData",
                                     "author"])
 
 HEADERS = ["Number", "Text", "Highlighted Count", "Title", "Author",
-           "Rating", "Overall Rank"]
+           "Rating", "Overall Rank", "Review Count"]
 
 class NullEntry:
     def __bool__(self):
@@ -43,8 +43,8 @@ class Scraper:
     BASE_URL_FMT = "https://kindle.amazon.com/most_popular/highlights_all_time/{}"
     USER_AGENT = {'User-agent': 'Mozilla/5.0'}
 
-    OVERALL_REGEX = r"#(\d+) (Paid)|(Free) in Kindle Store"
-    LINE_REGEX = r"\s* #(\d+) \n .*?>(.*)"
+    OVERALL_REGEX = r"#([0-9,]+) (Paid|Free) in Kindle Store"
+    LINE_REGEX = r"\s* #([0-9,]+) \n .*?>(.*)"
     WS_REGEX = r"\s+"
     NOT_DIGITS_REGEX = "[^0-9]"
 
@@ -65,7 +65,7 @@ class Scraper:
     def _make_book_request(self, book_url):
         ret = self._make_request(book_url)
 
-        #print("got request status code: {}".format(ret.status_code))
+        # print("got request status code: {}".format(ret.status_code))
 
         if ret.status_code != 200:
             raise BookNotFoundError
@@ -79,7 +79,9 @@ class Scraper:
         result = self._overall_re.search(tag_text)
 
         try:
-            return result.group(0)
+            # #print("got overall ranks group 0: {}, 1: {}, 2: {}".format(
+            #     *[result.group(i) for i in range(3)]))
+            return "#{} {}".format(result.group(1), result.group(2))
 
         except AttributeError:
             return None
@@ -128,7 +130,7 @@ class Scraper:
 
     def _get_review_count(self, count_tag):
         if count_tag:
-            return int(self._not_digits_re.sub("", tag.text))
+            return int(self._not_digits_re.sub("", count_tag.text))
         else:
             return ""
 
@@ -315,19 +317,19 @@ def write_books_to_csv(books, out_file):
         default_header_section = build_default_header_section(
             quote_data, book_data)
 
-        #print("got default header section: {}".format(
-#            default_header_section))
+        # #print("got default header section: {}".format(
+        #     default_header_section))
 
         info_header_section = build_info_header_section(book_data,
                                                         unique_infos)
 
-        #print("got info header section: {}".format(
-#            info_header_section))
+        # #print("got info header section: {}".format(
+        #     info_header_section))
 
         ranking_header_section = build_rank_header_section(book_data,
                                                            unique_rankings)
 
-        #print("got ranking header section: {}".format(ranking_header_section))
+        # #print("got ranking header section: {}".format(ranking_header_section))
 
         writer.writerow(
             default_header_section +
