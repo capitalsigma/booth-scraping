@@ -4,6 +4,10 @@ import csv
 import re
 import collections
 import math
+import logging
+
+logging.basicConfig(level=logging.ERROR)
+LOG = logging.getLogger(__name__)
 
 from bs4 import BeautifulSoup
 
@@ -21,7 +25,8 @@ BookData = collections.namedtuple("BookData",
                                    "individual_rank",
                                    "info",
                                    "rating",
-                                   "review_count"])
+                                   "review_count",
+                                   "public_notes"])
 QuoteData = collections.namedtuple("QuoteData",
                                    ["number",
                                     "text",
@@ -41,12 +46,14 @@ class NullEntry:
 
 class Scraper:
     BASE_URL_FMT = "https://kindle.amazon.com/most_popular/highlights_all_time/{}"
+    KINDLE_URL_FMT = "https://kindle.amazon.com{}"
     USER_AGENT = {'User-agent': 'Mozilla/5.0'}
 
     OVERALL_REGEX = r"#([0-9,]+) (Paid|Free) in Kindle Store"
     LINE_REGEX = r"\s* #([0-9,]+) \n .*?>(.*)"
     WS_REGEX = r"\s+"
     NOT_DIGITS_REGEX = "[^0-9]"
+    DIGITS_REGEX = r"(\d+)"
 
     def __init__(self):
         self._cached_book_urls = {}
@@ -56,6 +63,7 @@ class Scraper:
         self._line_re = re.compile(self.LINE_REGEX)
         self._ws_re = re.compile(self.WS_REGEX)
         self._not_digits_re = re.compile(self.NOT_DIGITS_REGEX)
+        self._digits_re = re.compile(self.DIGITS_REGEX)
 
 
     def _make_request(self, url):
@@ -65,12 +73,15 @@ class Scraper:
     def _make_book_request(self, book_url):
         ret = self._make_request(book_url)
 
-        # print("got request status code: {}".format(ret.status_code))
+        LOG.info("got request status code: {}".format(ret.status_code))
 
         if ret.status_code != 200:
-            raise BookNotFoundError
+            raise BookNotFoundError("URL: {}, status code: {}".format(book_url, ret.status_code))
 
         return ret
+
+    def _make_kindle_request(self, partial_url):
+        return self._make_book_request(self.KINDLE_URL_FMT.format(partial_url))
 
     def _get_most_highlighted_from(self, first):
         return self._make_request(self.BASE_URL_FMT.format(first))
@@ -79,7 +90,7 @@ class Scraper:
         result = self._overall_re.search(tag_text)
 
         try:
-            # #print("got overall ranks group 0: {}, 1: {}, 2: {}".format(
+            # #LOG.debug("got overall ranks group 0: {}, 1: {}, 2: {}".format(
             #     *[result.group(i) for i in range(3)]))
             return "#{} {}".format(result.group(1), result.group(2))
 
@@ -102,7 +113,7 @@ class Scraper:
 
             search_result = self._line_re.search(new_tag_text)
 
-            #print("got search_result: {}".format(search_result))
+            #LOG.debug("got search_result: {}".format(search_result))
 
         return to_ret
 
@@ -135,7 +146,7 @@ class Scraper:
             return ""
 
     def _process_book_page(self, page_soup):
-        # #print("processing page: {}".format(page_soup))
+        LOG.debug("processing page: {}".format(page_soup.find("title")))
 
         rankings_tag = page_soup.find(id="SalesRank")
 
@@ -144,23 +155,25 @@ class Scraper:
         except AttributeError:
             raise BookNotFoundError
 
-        #print("got overall_rank: {}".format(overall_rank))
+        LOG.debug("got overall_rank: {}".format(overall_rank))
 
         individual_ranks = self._get_individual_ranks(rankings_tag.text)
 
-        #print("got individual_ranks: {}".format(individual_ranks))
+        LOG.debug("got individual_ranks: {}".format(individual_ranks))
 
         prod_details = page_soup.find("h2", text="Product Details")
+
+        LOG.debug("got prod details: {}".format(prod_details))
 
         product_info = self._get_product_info(
             prod_details.next_sibling.next_sibling)
 
-        #print("got prod_info: {}".format(product_info))
+        LOG.debug("got prod_info: {}".format(product_info))
 
         rating = self._get_rating(
             page_soup.find(class_="gry txtnormal acrRating"))
 
-        #print("got rating: {}".format(rating))
+        LOG.debug("got rating: {}".format(rating))
 
         review_count = self._get_review_count(
             page_soup.find(id="revSAR"))
@@ -169,7 +182,8 @@ class Scraper:
                         individual_ranks,
                         product_info,
                         rating,
-                        review_count)
+                        review_count,
+                        "")
 
     def _get_num(self, number_tag):
         return int(number_tag.text.strip(" \n."))
@@ -193,32 +207,78 @@ class Scraper:
     def _get_url(self, see_link_tag):
         return see_link_tag.find("a").attrs['href']
 
-    def _get_new_book_page(self, url):
+    def _process_kindle_book_page(self, page_soup):
+        LOG.debug("Processing Kindle page.")
+
+        count_span = page_soup.find(class_="count")
+        LOG.debug("Got count_span: {}".format(count_span))
+        review_count = self._not_digits_re.sub("", count_span.text)
+
+        stars_tag = count_span.parent.find("img")
+        rating = re.sub("[^0-9.]", "", stars_tag.attrs['alt'])
+
+        LOG.debug("stars tag: {}".format(stars_tag))
+        LOG.debug("rating: {}".format(rating))
+
+        public_notes = page_soup.find(id="subscriberLink").text
+
+        ret = BookData("",
+                       {},
+                       {},
+                       rating,
+                       review_count,
+                       public_notes)
+
+        LOG.debug("Got partial book data: {}".format(ret))
+
+        return ret
+
+
+    def _get_new_book_page(self, url, kindle_book_url):
+        to_ret = BookData(None, None, None, None, None, None)
+
+        # they seem to get intermittent 500 errors, so we retry
+        for _ in range(5):
+            try:
+                kindle_soup = BeautifulSoup(
+                    self._make_kindle_request(kindle_book_url).text)
+                to_ret = self._process_kindle_book_page(kindle_soup)
+                break
+            except (ConnectionError, BookNotFoundError):
+                pass
+
         try:
             book_soup = BeautifulSoup(self._make_book_request(url).text)
-            return self._process_book_page(book_soup)
+            book_tup = self._process_book_page(book_soup)
+            return self._merge_tuples(to_ret, book_tup, BookData)
         except (ConnectionError, BookNotFoundError):
-            return NullEntry()
+            return to_ret
 
+    # left takes precedence
+    def _merge_tuples(self, lefts, rights, constructor):
+        LOG.debug("merging left: {}, right: {}".format(lefts, rights))
+
+        return constructor(*[left or right for
+                             left, right in zip(lefts, rights)])
 
     def _process_book(self, quote_tag):
-
         try:
             quote_data = self._process_quote_tag(quote_tag)
         except AttributeError:
             raise QuoteNotFoundError
 
-        #print("built quote_data: {}".format(quote_data))
+        LOG.debug("built quote_data: {}".format(quote_data))
 
         url = self._get_url(quote_tag.find(class_="seeLink"))
+        kindle_book_url = self._get_url(quote_tag.find(class_="title"))
 
         try:
             book_data = self._cached_book_urls[url]
         except KeyError:
-            book_data = self._get_new_book_page(url)
+            book_data = self._get_new_book_page(url, kindle_book_url)
             self._cached_book_urls[url] = book_data
 
-        #print("built book_data: {}".format(book_data))
+        LOG.debug("built book_data: {}".format(book_data))
 
         self._books[quote_data] = book_data
 
@@ -235,7 +295,7 @@ class Scraper:
             except QuoteNotFoundError:
                 last_number += 1
 
-            #print("Parsed for #{}".format(last_number))
+            LOG.debug("Parsed for #{}".format(last_number))
 
         return last_number
 
@@ -244,6 +304,8 @@ class Scraper:
         prev_num = -1
 
         while current_num < end_num:
+            LOG.info("Parsing number {}".format(current_num))
+
             highlighted_soup = BeautifulSoup(
                 self._get_most_highlighted_from(current_num).text)
 
@@ -254,10 +316,10 @@ class Scraper:
                 # we're stuck, break out
                 current_num = self._round_up_to_next_chunk(prev_num)
 
-            #print("current: {}".format(current_num))
-            #print("prev: {}".format(prev_num))
+            LOG.debug("current: {}".format(current_num))
+            LOG.debug("prev: {}".format(prev_num))
 
-        # #print(self._books)
+        LOG.debug(self._books)
 
         return self._books
 
@@ -317,19 +379,19 @@ def write_books_to_csv(books, out_file):
         default_header_section = build_default_header_section(
             quote_data, book_data)
 
-        # #print("got default header section: {}".format(
-        #     default_header_section))
+        LOG.debug("got default header section: {}".format(
+            default_header_section))
 
         info_header_section = build_info_header_section(book_data,
                                                         unique_infos)
 
-        # #print("got info header section: {}".format(
-        #     info_header_section))
+        LOG.debug("got info header section: {}".format(
+            info_header_section))
 
         ranking_header_section = build_rank_header_section(book_data,
                                                            unique_rankings)
 
-        # #print("got ranking header section: {}".format(ranking_header_section))
+        LOG.debug("got ranking header section: {}".format(ranking_header_section))
 
         writer.writerow(
             default_header_section +
