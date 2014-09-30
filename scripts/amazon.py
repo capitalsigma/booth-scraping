@@ -67,8 +67,13 @@ class Scraper:
 
 
     def _make_request(self, url):
-        return requests.get(url,
-                            headers=self.USER_AGENT)
+        while True:
+            try:
+                return requests.get(url,
+                                    headers=self.USER_AGENT)
+            except requests.ConnectionError as e:
+                LOG.error("Got connection error: {}. Retrying".format(e))
+
 
     def _make_book_request(self, book_url):
         ret = self._make_request(book_url)
@@ -140,8 +145,13 @@ class Scraper:
             return ""
 
     def _get_review_count(self, count_tag):
-        if count_tag:
-            return int(self._not_digits_re.sub("", count_tag.text))
+        LOG.debug("Grabbing for count tag: {}={}".format(
+            count_tag, count_tag and count_tag.text))
+        if count_tag and count_tag.text:
+
+            # we do this because a single review parses to 'see the
+            # review' rather than 'see all \d+ reviews'
+            return int(self._not_digits_re.sub("", count_tag.text) or 1)
         else:
             return ""
 
